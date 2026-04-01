@@ -1,0 +1,15 @@
+{
+  "name": "Remote Browser Stream",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "forwardPorts": [6080],
+  "portsAttributes": {
+    "6080": {
+      "label": "Remote Browser",
+      "visibility": "public"
+    }
+  },
+  "postCreateCommand": "chmod +x start.sh",
+  "postStartCommand": "./start.sh"
+}
