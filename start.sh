@@ -33,4 +33,4 @@ nohup "$CHROME_BIN" \
 sleep 2
 
 echo "==> Starting MJPEG stream server..."
-python3 /app/server.py
+python3 "$(dirname "$0")/server.py"
