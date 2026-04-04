@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     fonts-liberation \
     libnss3 \
-    libatk-bridge2.0-0t64 \
+    libatk-bridge2.0-0 \
     libxss1 \
     libasound2t64 \
     libgbm1 \
