@@ -2,7 +2,9 @@
 set -e
 
 export DISPLAY=:99
-CHROME_BIN="$(command -v google-chrome-stable || command -v google-chrome)"
+
+# Find Chrome binary — don't fail if not found yet
+CHROME_BIN="$(command -v google-chrome-stable || command -v google-chrome || echo "")"
 
 echo "==> Cleaning up old processes..."
 pkill -f "Xvfb :99" || true
@@ -21,16 +23,20 @@ echo "==> Starting XFCE desktop..."
 nohup startxfce4 >/tmp/xfce.log 2>&1 &
 sleep 4
 
-echo "==> Starting Google Chrome..."
-nohup "$CHROME_BIN" \
-    --no-sandbox \
-    --disable-dev-shm-usage \
-    --disable-gpu \
-    --window-size=1280,800 \
-    --start-maximized \
-    "https://example.com" \
-    >/tmp/chrome.log 2>&1 &
-sleep 2
+if [ -n "$CHROME_BIN" ]; then
+    echo "==> Starting Google Chrome..."
+    nohup "$CHROME_BIN" \
+        --no-sandbox \
+        --disable-dev-shm-usage \
+        --disable-gpu \
+        --window-size=1280,800 \
+        --start-maximized \
+        "https://example.com" \
+        >/tmp/chrome.log 2>&1 &
+    sleep 2
+else
+    echo "==> Warning: Chrome not found, skipping..."
+fi
 
 echo "==> Starting MJPEG stream server..."
 python3 "$(dirname "$0")/server.py"
