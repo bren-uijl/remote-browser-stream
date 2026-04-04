@@ -9,74 +9,95 @@ import threading
 import time
 import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlparse, parse_qs
 
 DISPLAY = os.environ.get("DISPLAY", ":99")
 PORT = int(os.environ.get("PORT", 6080))
 FPS = int(os.environ.get("FPS", 10))
 QUALITY = int(os.environ.get("JPEG_QUALITY", 70))
 RESOLUTION = os.environ.get("RESOLUTION", "1280x800")
+RES_W, RES_H = RESOLUTION.split("x")
 
-clients = []
-clients_lock = threading.Lock()
 latest_frame = None
 frame_lock = threading.Lock()
 
-HTML = """<!DOCTYPE html>
+HTML = f"""<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Remote Browser 🦉</title>
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #111; display: flex; flex-direction: column; align-items: center; height: 100vh; }
-    #toolbar {
+    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+    body {{ background: #111; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }}
+    #toolbar {{
       width: 100%; background: #222; padding: 8px 16px;
       display: flex; align-items: center; gap: 10px; color: #fff; font-family: sans-serif; font-size: 14px;
-    }
-    #toolbar input {
+      flex-shrink: 0;
+    }}
+    #toolbar input {{
       flex: 1; padding: 5px 10px; border-radius: 4px; border: none;
       font-size: 14px; background: #333; color: #fff;
-    }
-    #toolbar button {
+    }}
+    #toolbar button {{
       padding: 5px 14px; border-radius: 4px; border: none;
       background: #4a90d9; color: #fff; cursor: pointer; font-size: 14px;
-    }
-    #screen { flex: 1; width: 100%; display: flex; justify-content: center; align-items: center; }
-    #stream { max-width: 100%; max-height: 100%; cursor: crosshair; }
-    #status { color: #888; font-size: 12px; font-family: sans-serif; }
+    }}
+    #screen {{ flex: 1; display: flex; justify-content: center; align-items: center; overflow: hidden; }}
+    #stream {{ max-width: 100%; max-height: 100%; cursor: crosshair; display: block; }}
+    #status {{ color: #888; font-size: 12px; white-space: nowrap; }}
   </style>
 </head>
 <body>
   <div id="toolbar">
-    <span>🦉 Remote Browser</span>
-    <input id="url" type="text" placeholder="Type a URL and press Enter..." onkeydown="navigate(event)">
-    <button onclick="sendClick('refresh')">↻</button>
-    <span id="status">streaming</span>
+    <span>🦉</span>
+    <input id="url" type="text" placeholder="Type a URL and press Enter...">
+    <button id="gobtn">Go</button>
+    <button onclick="sendAction('refresh')">↻</button>
+    <span id="status">connecting...</span>
   </div>
   <div id="screen">
-    <img id="stream" src="/stream" onclick="sendMouseClick(event)" alt="stream">
+    <img id="stream" src="/stream" alt="stream">
   </div>
   <script>
-    function navigate(e) {
+    const img = document.getElementById('stream');
+    const status = document.getElementById('status');
+    const urlInput = document.getElementById('url');
+
+    img.onload = () => status.textContent = 'streaming';
+    img.onerror = () => {{ status.textContent = 'reconnecting...'; setTimeout(() => img.src = '/stream?' + Date.now(), 2000); }};
+
+    function sendAction(action, params) {{
+      const q = new URLSearchParams({{ action, ...params }});
+      fetch('/input?' + q);
+    }}
+
+    urlInput.addEventListener('keydown', e => {{
       if (e.key !== 'Enter') return;
-      let url = document.getElementById('url').value;
+      let url = urlInput.value;
       if (!url.startsWith('http')) url = 'https://' + url;
-      fetch('/input?action=navigate&url=' + encodeURIComponent(url));
-    }
-    function sendMouseClick(e) {
-      const img = document.getElementById('stream');
+      sendAction('navigate', {{ url }});
+    }});
+
+    document.getElementById('gobtn').onclick = () => urlInput.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter' }}));
+
+    img.addEventListener('click', e => {{
       const rect = img.getBoundingClientRect();
-      const x = Math.round((e.clientX - rect.left) / rect.width * """ + RESOLUTION.split('x')[0] + """);
-      const y = Math.round((e.clientY - rect.top) / rect.height * """ + RESOLUTION.split('x')[1] + """);
-      fetch('/input?action=click&x=' + x + '&y=' + y);
-    }
-    function sendClick(action) {
-      fetch('/input?action=' + action);
-    }
-    document.addEventListener('keydown', function(e) {
-      fetch('/input?action=key&key=' + encodeURIComponent(e.key));
-    });
+      const x = Math.round((e.clientX - rect.left) / rect.width * {RES_W});
+      const y = Math.round((e.clientY - rect.top) / rect.height * {RES_H});
+      sendAction('click', {{ x, y }});
+      img.focus();
+    }});
+
+    // Keyboard: type printable chars, use key for special keys
+    document.addEventListener('keydown', e => {{
+      if (document.activeElement === urlInput) return;
+      if (e.key.length === 1) {{
+        sendAction('type', {{ char: e.key }});
+      }} else {{
+        sendAction('key', {{ key: e.key }});
+      }}
+    }});
   </script>
 </body>
 </html>"""
@@ -107,7 +128,8 @@ def capture_frames():
 
 
 def xdotool(args):
-    subprocess.run(["xdotool"] + args, env={"DISPLAY": DISPLAY}, timeout=3)
+    env = {**os.environ, "DISPLAY": DISPLAY}
+    subprocess.run(["xdotool"] + args, env=env, timeout=3, capture_output=True)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -115,16 +137,25 @@ class Handler(BaseHTTPRequestHandler):
         pass  # suppress access logs
 
     def do_GET(self):
-        if self.path == "/":
+        path = self.path.split("?")[0]
+
+        if path == "/" or path == "":
             self.send_response(200)
-            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(HTML.encode())
 
-        elif self.path == "/stream":
+        elif path == "/health":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        elif path == "/stream":
             self.send_response(200)
             self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
             self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Accel-Buffering", "no")
             self.end_headers()
             try:
                 while True:
@@ -139,8 +170,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
-        elif self.path.startswith("/input"):
-            from urllib.parse import urlparse, parse_qs
+        elif path == "/input":
             params = parse_qs(urlparse(self.path).query)
             action = params.get("action", [""])[0]
 
@@ -149,13 +179,31 @@ class Handler(BaseHTTPRequestHandler):
                     x = params.get("x", ["0"])[0]
                     y = params.get("y", ["0"])[0]
                     xdotool(["mousemove", "--sync", x, y, "click", "1"])
+                elif action == "type":
+                    # Single printable character
+                    char = params.get("char", [""])[0]
+                    if char:
+                        xdotool(["type", "--clearmodifiers", char])
                 elif action == "key":
+                    # Special key (Enter, Backspace, ctrl+l, etc.)
                     key = params.get("key", [""])[0]
-                    xdotool(["key", key])
+                    key_map = {
+                        "Enter": "Return",
+                        "Backspace": "BackSpace",
+                        "ArrowLeft": "Left",
+                        "ArrowRight": "Right",
+                        "ArrowUp": "Up",
+                        "ArrowDown": "Down",
+                        "Escape": "Escape",
+                        "Tab": "Tab",
+                        "Delete": "Delete",
+                    }
+                    xdotool_key = key_map.get(key, key)
+                    xdotool(["key", xdotool_key])
                 elif action == "navigate":
                     url = params.get("url", [""])[0]
                     xdotool(["key", "ctrl+l"])
-                    time.sleep(0.2)
+                    time.sleep(0.3)
                     xdotool(["type", "--clearmodifiers", url])
                     time.sleep(0.1)
                     xdotool(["key", "Return"])
@@ -165,6 +213,7 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
             self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
             self.end_headers()
             self.wfile.write(b"ok")
 
@@ -174,11 +223,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    print(f"==> Starting frame capture at {FPS}fps...")
+    print(f"==> Starting frame capture at {FPS}fps ({RESOLUTION})...")
     t = threading.Thread(target=capture_frames, daemon=True)
     t.start()
 
     print(f"==> Starting HTTP server on port {PORT}...")
     server = HTTPServer(("0.0.0.0", PORT), Handler)
-    print(f"==> Vink🦉 — streaming on http://0.0.0.0:{PORT}")
+    print(f"==> Vinkbot🦉 — streaming on http://0.0.0.0:{PORT}")
     server.serve_forever()
